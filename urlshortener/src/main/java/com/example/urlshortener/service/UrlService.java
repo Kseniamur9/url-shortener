@@ -1,5 +1,8 @@
 package com.example.urlshortener.service;
 
+import com.example.urlshortener.exception.LinkExpiredException;
+import com.example.urlshortener.exception.LinkNotFoundException;
+
 import com.example.urlshortener.dto.ShortenRequest;
 import com.example.urlshortener.dto.ShortenResponse;
 import com.example.urlshortener.model.Url;
@@ -14,12 +17,14 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.time.Duration;
-import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class UrlService {
+
+    private static final String CACHE_PREFIX = "url:";
+    private static final Duration MAX_CACHE_TTL = Duration.ofHours(24);
 
     private final UrlRepository urlRepository;
     private final StringRedisTemplate redis;
@@ -29,7 +34,6 @@ public class UrlService {
 
     @Transactional
     public ShortenResponse shorten(ShortenRequest request) {
-        // Сохраняем с временным кодом, получаем ID
         Url url = Url.builder()
                 .code("tmp")
                 .originalUrl(request.getUrl())
@@ -42,7 +46,7 @@ public class UrlService {
 
         url = urlRepository.save(url);
 
-        // Генерируем код из ID — гарантирует уникальность, нет коллизий
+
         String code = Base62.encode(url.getId());
         url.setCode(code);
         urlRepository.save(url);
@@ -57,36 +61,40 @@ public class UrlService {
                 .build();
     }
 
-    @Transactional
     public String getOriginalUrl(String code) {
-        // 1. Проверяем Redis кэш
-        String cached = redis.opsForValue().get("url:" + code);
+        String cached = redis.opsForValue().get(CACHE_PREFIX + code);
         if (cached != null) {
             log.info("Cache HIT для кода: {}", code);
             incrementClickAsync(code);
             return cached;
         }
 
-        // 2. Fallback в PostgreSQL
         Url url = urlRepository.findByCode(code)
-                .orElseThrow(() -> new RuntimeException("Ссылка не найдена: " + code));
+                .orElseThrow(() -> new LinkNotFoundException(code));
 
-        // 3. Проверяем не истекла ли ссылка
-        if (url.getExpiresAt() != null && url.getExpiresAt().isBefore(LocalDateTime.now())) {
-            throw new RuntimeException("Ссылка истекла");
+        LocalDateTime now = LocalDateTime.now();
+        if (url.getExpiresAt() != null && !url.getExpiresAt().isAfter(now)) {
+            throw new LinkExpiredException(code);
         }
 
-        // 4. Кладём в кэш на 24 часа
-        redis.opsForValue().set("url:" + code, url.getOriginalUrl(), Duration.ofHours(24));
+        redis.opsForValue().set(CACHE_PREFIX + code, url.getOriginalUrl(), cacheTtl(url, now));
         log.info("Cache MISS, загружено из БД: {}", code);
 
         incrementClickAsync(code);
         return url.getOriginalUrl();
     }
 
+    private Duration cacheTtl(Url url, LocalDateTime now) {
+        if (url.getExpiresAt() == null) {
+            return MAX_CACHE_TTL;
+        }
+        Duration untilExpiry = Duration.between(now, url.getExpiresAt());
+        return untilExpiry.compareTo(MAX_CACHE_TTL) < 0 ? untilExpiry : MAX_CACHE_TTL;
+    }
+
     public ShortenResponse getStats(String code) {
         Url url = urlRepository.findByCode(code)
-                .orElseThrow(() -> new RuntimeException("Ссылка не найдена"));
+                .orElseThrow(() -> new LinkNotFoundException(code));
 
         return ShortenResponse.builder()
                 .shortUrl(baseUrl + "/" + code)
@@ -96,7 +104,7 @@ public class UrlService {
                 .build();
     }
 
-    // Счётчик кликов не должен тормозить редирект
+
     private void incrementClickAsync(String code) {
         Thread.ofVirtual().start(() -> urlRepository.incrementClickCount(code));
     }

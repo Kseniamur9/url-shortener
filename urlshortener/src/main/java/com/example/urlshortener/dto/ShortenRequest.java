@@ -14,6 +14,6 @@ public class ShortenRequest {
     )
     private String url;
 
-    // Опционально: через сколько дней истекает ссылка
+
     private Integer expireDays;
 }
