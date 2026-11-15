@@ -16,14 +16,12 @@ public class UrlController {
 
     private final UrlService urlService;
 
-    // POST /shorten — создать короткую ссылку
     @PostMapping("/shorten")
     public ResponseEntity<ShortenResponse> shorten(@Valid @RequestBody ShortenRequest request) {
         ShortenResponse response = urlService.shorten(request);
         return ResponseEntity.ok(response);
     }
 
-    // GET /{code} — редирект на оригинальный URL
     @GetMapping("/{code}")
     public ResponseEntity<Void> redirect(@PathVariable String code) {
         String originalUrl = urlService.getOriginalUrl(code);
@@ -32,7 +30,6 @@ public class UrlController {
                 .build();
     }
 
-    // GET /stats/{code} — статистика по ссылке
     @GetMapping("/stats/{code}")
     public ResponseEntity<ShortenResponse> stats(@PathVariable String code) {
         return ResponseEntity.ok(urlService.getStats(code));
